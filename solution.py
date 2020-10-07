@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import sklearn.gaussian_process as gp
 
 ## Constant for Cost function
 THRESHOLD = 0.5
@@ -79,24 +80,32 @@ class Model():
         """
             TODO: enter your code here
         """
-        pass
+        self.__kernel = gp.kernels.ConstantKernel(1.0, (1e-1, 1e3)) * gp.kernels.RBF(10.0, (1e-3, 1e3))
+        # alpha is the variance of the i.i.d. noise on the labels, and normalize_y refers to the constant mean function
+        # — either zero if False or the training data mean if True.
+        self.__model = gp.GaussianProcessRegressor(kernel=self.__kernel, n_restarts_optimizer=10, alpha=0.1, normalize_y=True)
+        #pass
 
     def predict(self, test_x):
         """
             TODO: enter your code here
         """
         ## dummy code below
-        y = np.ones(test_x.shape[0]) * THRESHOLD - 0.00001
-        return y
+        #y = np.ones(test_x.shape[0]) * THRESHOLD - 0.00001
+        y_pred, std = self.__model.predict(test_x, return_std=True)
+        return y_pred
 
     def fit_model(self, train_x, train_y):
         """
              TODO: enter your code here
         """
-        pass
+        self.__model.fit(train_x, train_x)
+        params = self.__model.kernel_.get_params()
+
+        #pass
 
 
-def vis(train_x, train_y):
+def visualize(train_x, train_y):
     train_x1 = list(map(lambda x: x[0], train_x))
     train_x2 = list(map(lambda x: x[1], train_x))
     label = list(map(lambda x: ('g' if x <= 0.5 else 'r'), train_y))
