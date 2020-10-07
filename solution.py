@@ -99,7 +99,7 @@ class Model():
         """
              TODO: enter your code here
         """
-        self.__model.fit(train_x, train_x)
+        self.__model.fit(train_x, train_y)
         params = self.__model.kernel_.get_params()
 
         #pass
