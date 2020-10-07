@@ -83,9 +83,9 @@ class Model():
         """
         self.__kernel = gp.kernels.ConstantKernel(1.0, (1e-1, 1e3)) * gp.kernels.RBF(10.0, (1e-3, 1e3))
         # alpha is the variance of the i.i.d. noise on the labels, and normalize_y refers to the constant mean function
-        # — either zero if False or the training data mean if True.
-        self.__kernel_approximation = Nystroem(gamma=.2, random_state=1, n_components=300)
-        self.__model = gp.GaussianProcessRegressor(n_restarts_optimizer=0,
+        # — either zero if False or the training datj mean if True.
+        self.__kernel_approximation = Nystroem(kernel=self.__kernel, gamma=.2, random_state=1, n_components=300)
+        self.__model = gp.GaussianProcessRegressor(kernel=self.__kernel, n_restarts_optimizer=0,
                                                    alpha=0.1, normalize_y=False)
         # pass
 
@@ -102,8 +102,8 @@ class Model():
         """
              TODO: enter your code here
         """
-        data = self.__kernel_approximation.fit_transform(train_x, train_y)
-        self.__model.fit(data, train_y)
+        approximated_train_x = self.__kernel_approximation.fit_transform(train_x)
+        self.__model.fit(approximated_train_x, train_y)
         params = self.__model.kernel_.get_params()
 
         # pass
