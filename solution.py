@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 ## Constant for Cost function
 THRESHOLD = 0.5
@@ -94,6 +95,13 @@ class Model():
         """
         pass
 
+
+def vis(train_x, train_y):
+    train_x1 = list(map(lambda x: x[0], train_x))
+    train_x2 = list(map(lambda x: x[1], train_x))
+    label = list(map(lambda x: ('g' if x <= 0.5 else 'r'), train_y))
+    plt.scatter(train_x1, train_x2, s=0.1, c=label)
+    plt.show()
 
 def main():
     train_x_name = "train_x.csv"
