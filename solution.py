@@ -1,7 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import sklearn.gaussian_process as gp
-from sklearn.kernel_approximation import Nystroem
+import gpytorch as gp
+import torch
+from matplotlib import animation
+from mpl_toolkits.mplot3d import Axes3D
 
 ## Constant for Cost function
 THRESHOLD = 0.5
@@ -57,6 +59,21 @@ It uses predictions to compare to the ground truth using the cost_function above
 """
 
 
+class ExactGPModel(gp.models.ExactGP):
+    def __init__(self, train_x, train_y, kernel):
+        super(ExactGPModel, self).__init__(train_x, train_y, likelihood=gp.likelihoods.GaussianLikelihood())
+        if torch.cuda.is_available():
+            self.likelihood = self.likelihood.cuda()
+        # Zero Mean?
+        self.mean_module = gp.means.ConstantMean()
+        self.covar_module = get_kernel(kernel)
+
+    def forward(self, x):
+        mean_x = self.mean_module(x)
+        covar_x = self.covar_module(x)
+        return gp.distributions.MultivariateNormal(mean_x, covar_x)
+
+
 class Model():
     """
     We envisage that in order to solve this task you need to overcome three challenges - each requiring a specific strategy.
@@ -77,47 +94,141 @@ class Model():
     respect to a general squared loss and some posterior distribution over the true value to be predicted.
     """
 
-    def __init__(self):
-        """
-            TODO: enter your code here
-        """
-        self.__kernel = gp.kernels.ConstantKernel(1.0, (1e-1, 1e3)) * gp.kernels.RBF(10.0, (1e-3, 1e3))
-        # alpha is the variance of the i.i.d. noise on the labels, and normalize_y refers to the constant mean function
-        # — either zero if False or the training data mean if True.
-        self.__kernel_approximation = Nystroem(gamma=.2, random_state=1, n_components=300)
-        self.__model = gp.GaussianProcessRegressor(n_restarts_optimizer=0,
-                                                   alpha=0.1, normalize_y=False)
-        # pass
-
     def predict(self, test_x):
-        """
-            TODO: enter your code here
-        """
-        ## dummy code below
-        # y = np.ones(test_x.shape[0]) * THRESHOLD - 0.00001
-        y_pred, std = self.__model.predict(self.__kernel_approximation.transform(test_x), return_std=True)
-        return y_pred
+        self.model.eval()
+        test_x = torch.from_numpy(np.array(test_x)).float()
+        y_preds = self.model.likelihood(self.model(test_x))
+        sol_mean = y_preds.mean.data.numpy()
+        sol_std = y_preds.stddev.data.numpy()
+
+        return np.array(list(map(lambda x, y: min(x + y, 1), sol_mean, sol_std)))
 
     def fit_model(self, train_x, train_y):
-        """
-             TODO: enter your code here
-        """
-        data = self.__kernel_approximation.fit_transform(train_x, train_y)
-        self.__model.fit(data, train_y)
-        params = self.__model.kernel_.get_params()
+        if torch.cuda.is_available():
+            train_x = torch.from_numpy(np.array(train_x)).float().cuda()
+            train_y = torch.from_numpy(np.array(train_y)).float().cuda()
+        else:
+            train_x = torch.from_numpy(np.array(train_x)).float()
+            train_y = torch.from_numpy(np.array(train_y)).float()
 
-        # pass
+        training_iter = 100
+
+        best_kernel = {}
+        for kernel in kernels:
+            print("Start training with", kernel, "kernel")
+            model = ExactGPModel(train_x, train_y, kernel)
+            if torch.cuda.is_available():
+                model = model.cuda()
+            model.train()
+            model.likelihood.train()
+
+            # Use the adam optimizer
+            optimizer = torch.optim.Adam([
+                {'params': model.parameters()},  # Includes GaussianLikelihood parameters
+            ], lr=0.1)
+            # "Loss" for GPs - the marginal log likelihood
+            mll = gp.mlls.ExactMarginalLogLikelihood(model.likelihood, model)
+
+            losses = []
+            lengthscale = []
+            outputscale = []
+            noise = []
+
+            for i in range(training_iter):
+                # Zero gradients from previous iteration
+                optimizer.zero_grad()
+                # Output from model
+                output = model(train_x)
+                # Calc loss and backprop gradients
+                loss = -mll(output, train_y)
+                loss.backward()
+
+                losses.append(loss.item())
+                noise.append(model.likelihood.noise.item())
+
+                print('Iter %d/%d - Loss: %.3f   Noise: %.3f' % (
+                    i + 1, training_iter, loss.item(),
+                    model.likelihood.noise.item()
+                ))
+                optimizer.step()
+
+            if torch.cuda.is_available():
+                model = model.cpu()
+                model.likelihood = model.likelihood.cpu()
+
+            plt.plot(losses, label=f"{kernel}")
+            plt.legend(loc="best")
+            plt.xlabel("Num Iteration")
+            plt.ylabel("MLL Loss")
+            plt.show()
+            best_kernel[kernel] = (loss.item(), model)
+
+        del train_x
+        del train_y
+
+        best_model = min(best_kernel.values(), key=lambda x: x[0])[1]
+        self.model = best_model
 
 
-def visualize(train_x, train_y):
+def visualize_data(train_x, train_y):
     train_x1 = list(map(lambda x: x[0], train_x))
     train_x2 = list(map(lambda x: x[1], train_x))
     label = list(map(lambda x: ('g' if x <= 0.5 else 'r'), train_y))
-    plt.scatter(train_x1, train_x2, s=0.1, c=label)
-    plt.show()
+    fig = plt.figure()
+    ax = Axes3D(fig)
+
+    def init():
+        ax.scatter(train_x1, train_x2, train_y, s=0.1, c=label, alpha=0.6)
+        return fig,
+
+    def animate(i):
+        ax.view_init(elev=10., azim=i)
+        return fig,
+
+    anim = animation.FuncAnimation(fig, animate, init_func=init,
+                                   frames=360, interval=20, blit=True)
+    # Save
+    anim.save('basic_animation.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
+
+
+# kernels = ["RBF", "linear", "quadratic", "Matern-1/2", "Matern-3/2", "Matern-5/2"]
+
+# Best Model utilizes the "Matern-1/2" kernel with a loss of ~ -1.639
+kernels = ["Matern-1/2"]
+
+
+def get_kernel(kernel, composition="addition"):
+    base_kernel = []
+    if "RBF" in kernel:
+        base_kernel.append(gp.kernels.RBFKernel())
+    if "linear" in kernel:
+        base_kernel.append(gp.kernels.LinearKernel())
+    if "quadratic" in kernel:
+        base_kernel.append(gp.kernels.PolynomialKernel(power=2))
+    if "Matern-1/2" in kernel:
+        base_kernel.append(gp.kernels.MaternKernel(nu=1 / 2))
+    if "Matern-3/2" in kernel:
+        base_kernel.append(gp.kernels.MaternKernel(nu=3 / 2))
+    if "Matern-5/2" in kernel:
+        base_kernel.append(gp.kernels.MaternKernel(nu=5 / 2))
+    if "Cosine" in kernel:
+        base_kernel.append(gp.kernels.CosineKernel())
+
+    if composition == "addition":
+        base_kernel = gp.kernels.AdditiveKernel(*base_kernel)
+    elif composition == "product":
+        base_kernel = gp.kernels.ProductKernel(*base_kernel)
+    else:
+        raise NotImplementedError
+    kernel = gp.kernels.ScaleKernel(base_kernel)
+    return kernel
 
 
 def main():
+    if not torch.cuda.is_available():
+        quit(-1)
+    torch.cuda.empty_cache()
+    # load the train dateset
     train_x_name = "train_x.csv"
     train_y_name = "train_y.csv"
 
