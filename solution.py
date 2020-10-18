@@ -62,9 +62,6 @@ It uses predictions to compare to the ground truth using the cost_function above
 class ExactGPModel(gp.models.ExactGP):
     def __init__(self, train_x, train_y, kernel):
         super(ExactGPModel, self).__init__(train_x, train_y, likelihood=gp.likelihoods.GaussianLikelihood())
-        if torch.cuda.is_available():
-            self.likelihood = self.likelihood.cuda()
-        # Zero Mean?
         self.mean_module = gp.means.ConstantMean()
         self.covar_module = get_kernel(kernel)
 
@@ -104,12 +101,8 @@ class Model():
         return np.array(list(map(lambda x, y: min(x + y, 1), sol_mean, sol_std)))
 
     def fit_model(self, train_x, train_y):
-        if torch.cuda.is_available():
-            train_x = torch.from_numpy(np.array(train_x)).float().cuda()
-            train_y = torch.from_numpy(np.array(train_y)).float().cuda()
-        else:
-            train_x = torch.from_numpy(np.array(train_x)).float()
-            train_y = torch.from_numpy(np.array(train_y)).float()
+        train_x = torch.from_numpy(np.array(train_x)).float()
+        train_y = torch.from_numpy(np.array(train_y)).float()
 
         training_iter = 100
 
@@ -117,8 +110,6 @@ class Model():
         for kernel in kernels:
             print("Start training with", kernel, "kernel")
             model = ExactGPModel(train_x, train_y, kernel)
-            if torch.cuda.is_available():
-                model = model.cuda()
             model.train()
             model.likelihood.train()
 
@@ -130,8 +121,6 @@ class Model():
             mll = gp.mlls.ExactMarginalLogLikelihood(model.likelihood, model)
 
             losses = []
-            lengthscale = []
-            outputscale = []
             noise = []
 
             for i in range(training_iter):
@@ -152,9 +141,6 @@ class Model():
                 ))
                 optimizer.step()
 
-            if torch.cuda.is_available():
-                model = model.cpu()
-                model.likelihood = model.likelihood.cpu()
 
             plt.plot(losses, label=f"{kernel}")
             plt.legend(loc="best")
@@ -162,9 +148,6 @@ class Model():
             plt.ylabel("MLL Loss")
             plt.show()
             best_kernel[kernel] = (loss.item(), model)
-
-        del train_x
-        del train_y
 
         best_model = min(best_kernel.values(), key=lambda x: x[0])[1]
         self.model = best_model
@@ -225,9 +208,6 @@ def get_kernel(kernel, composition="addition"):
 
 
 def main():
-    if not torch.cuda.is_available():
-        quit(-1)
-    torch.cuda.empty_cache()
     # load the train dateset
     train_x_name = "train_x.csv"
     train_y_name = "train_y.csv"
