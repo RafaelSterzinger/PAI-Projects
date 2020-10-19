@@ -90,6 +90,9 @@ class Model():
     the mean prediction might not be optimal. Note that the mean prediction refers to the optimal decision with
     respect to a general squared loss and some posterior distribution over the true value to be predicted.
     """
+    def __init__(self):
+        torch.manual_seed(69)
+        np.random.seed(69)
 
     def predict(self, test_x):
         self.model.eval()
