@@ -6,7 +6,8 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from torch import nn
 from torch.nn import functional as F
 from tqdm import trange, tqdm
-import torchbnn as bnn
+
+device = 'cpu'
 
 
 def ece(probs, labels, n_bins=30):
@@ -159,7 +160,8 @@ class BayesianLayer(torch.nn.Module):
         and the Gaussian prior.
         '''
         # TODO: enter your code here
-        kl = np.log(self.prior_sigma) - logsigma + (torch.exp(logsigma) ** 2 + (mu - self.prior_mu) ** 2) / ( 2 * self.prior_sigma ** 2) - 0.5
+        kl = np.log(self.prior_sigma) - logsigma + (torch.exp(logsigma) ** 2 + (mu - self.prior_mu) ** 2) / (
+                2 * self.prior_sigma ** 2) - 0.5
         return kl.sum()
 
 
@@ -183,31 +185,35 @@ class BayesNet(torch.nn.Module):
         return self.net(x)
 
     def predict_class_probs(self, x, num_forward_passes=10):
-        print("hallo")
         assert x.shape[1] == 28 ** 2
         batch_size = x.shape[0]
 
         # TODO: make n random forward passes
         # compute the categorical softmax probabilities
         # marginalize the probabilities over the n forward passes
-
-        # assert probs.shape == (batch_size, 10)
-        # return probs
+        yhats = []
+        for entry in x:
+            yhat = [self.forward(entry) for i in range(0, num_forward_passes)]
+            mean = torch.mean(torch.stack(yhat), 0)
+            yhats.append(mean)
+        yhats = torch.stack(yhats)
+        assert yhats.shape == (batch_size, 10)
+        return yhats
 
     def kl_loss(self):
         '''
         Computes the KL divergence loss for all layers.
         '''
         # TODO: enter your code here
-        kl_sum = torch.Tensor([0])
-        n = torch.Tensor([0])
+        kl_sum = torch.Tensor([0]).to(device)
+        n = torch.Tensor([0]).to(device)
 
         for m in self.net.modules():
             if isinstance(m, BayesianLayer):
                 kl_sum += m.kl_divergence()
                 n += len(m.weight_mu.view(-1))
 
-        return kl_sum/n
+        return kl_sum / n
 
 
 def train_network(model, optimizer, train_loader, num_epochs=100, pbar_update_interval=100):
@@ -218,13 +224,13 @@ def train_network(model, optimizer, train_loader, num_epochs=100, pbar_update_in
     The progress bar computes the accuracy every `pbar_update_interval`
     iterations.
     '''
-    criterion = torch.nn.CrossEntropyLoss().cuda()  # always used in this assignment
+    criterion = torch.nn.CrossEntropyLoss().to(device)  # always used in this assignment
 
     pbar = trange(num_epochs)
     for i in pbar:
         for k, (batch_x, batch_y) in enumerate(train_loader):
-            batch_x = batch_x.cuda()
-            batch_y = batch_y.cuda()
+            batch_x = batch_x.to(device)
+            batch_y = batch_y.to(device)
             model.zero_grad()
             y_pred = model(batch_x)
             loss = criterion(y_pred, batch_y)
@@ -243,6 +249,8 @@ def train_network(model, optimizer, train_loader, num_epochs=100, pbar_update_in
 
             del batch_x
             del batch_y
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def evaluate_model(model, model_type, test_loader, batch_size, extended_eval, private_test):
@@ -255,14 +263,24 @@ def evaluate_model(model, model_type, test_loader, batch_size, extended_eval, pr
     on the predictive confidences.
     '''
     accs_test = []
-    probs = torch.tensor([])
-    labels = torch.tensor([]).long()
+    probs = torch.tensor([]).to(device)
+    labels = torch.tensor([]).long().to(device)
+    c = 0
     for batch_x, batch_y in test_loader:
+        c += 1
+        batch_x = batch_x.to(device)
+        batch_y = batch_y.to(device)
+
         pred = model.predict_class_probs(batch_x)
         probs = torch.cat((probs, pred))
         labels = torch.cat((labels, batch_y))
         acc = (pred.argmax(axis=1) == batch_y).sum().float().item() / (len(batch_y))
         accs_test.append(acc)
+
+        del batch_x
+        del batch_y
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     if not private_test:
         acc_mean = np.mean(accs_test)
@@ -276,6 +294,7 @@ def evaluate_model(model, model_type, test_loader, batch_size, extended_eval, pr
     if extended_eval:
         confidences = []
         for batch_x, batch_y in test_loader:
+            batch_x = batch_x.to(device)
             pred = model.predict_class_probs(batch_x)
             confs, _ = pred.max(dim=1)
             confidences.extend(confs.detach().numpy())
@@ -349,9 +368,9 @@ def main(test_loader=None, private_test=False):
                                                shuffle=True, drop_last=True)
 
     if model_type == "bayesnet":
-        model = BayesNet(input_size=784, num_layers=2, width=100).cuda()
+        model = BayesNet(input_size=784, num_layers=2, width=100).to(device)
     elif model_type == "densenet":
-        model = Densenet(input_size=784, num_layers=2, width=100).cuda()
+        model = Densenet(input_size=784, num_layers=2, width=100).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     train_network(model, optimizer, train_loader,
@@ -369,5 +388,7 @@ def main(test_loader=None, private_test=False):
 
 
 if __name__ == "__main__":
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    if torch.cuda.is_available():
+        device = 0
+        torch.cuda.empty_cache()
     main()
