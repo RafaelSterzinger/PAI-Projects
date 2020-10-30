@@ -218,11 +218,13 @@ def train_network(model, optimizer, train_loader, num_epochs=100, pbar_update_in
     The progress bar computes the accuracy every `pbar_update_interval`
     iterations.
     '''
-    criterion = torch.nn.CrossEntropyLoss()  # always used in this assignment
+    criterion = torch.nn.CrossEntropyLoss().cuda()  # always used in this assignment
 
     pbar = trange(num_epochs)
     for i in pbar:
         for k, (batch_x, batch_y) in enumerate(train_loader):
+            batch_x = batch_x.cuda()
+            batch_y = batch_y.cuda()
             model.zero_grad()
             y_pred = model(batch_x)
             loss = criterion(y_pred, batch_y)
@@ -238,6 +240,9 @@ def train_network(model, optimizer, train_loader, num_epochs=100, pbar_update_in
             if k % pbar_update_interval == 0:
                 acc = (model(batch_x).argmax(axis=1) == batch_y).sum().float() / (len(batch_y))
                 pbar.set_postfix(loss=loss.item(), acc=acc.item())
+
+            del batch_x
+            del batch_y
 
 
 def evaluate_model(model, model_type, test_loader, batch_size, extended_eval, private_test):
@@ -344,9 +349,9 @@ def main(test_loader=None, private_test=False):
                                                shuffle=True, drop_last=True)
 
     if model_type == "bayesnet":
-        model = BayesNet(input_size=784, num_layers=2, width=100)
+        model = BayesNet(input_size=784, num_layers=2, width=100).cuda()
     elif model_type == "densenet":
-        model = Densenet(input_size=784, num_layers=2, width=100)
+        model = Densenet(input_size=784, num_layers=2, width=100).cuda()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     train_network(model, optimizer, train_loader,
@@ -364,4 +369,5 @@ def main(test_loader=None, private_test=False):
 
 
 if __name__ == "__main__":
+    torch.set_default_tensor_type('torch.cuda.FloatTensor')
     main()
