@@ -174,7 +174,7 @@ def visualize_data(train_x, train_y):
     anim = animation.FuncAnimation(fig, animate, init_func=init,
                                    frames=360, interval=20, blit=True)
     # Save
-    anim.save('basic_animation.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
+    anim.save('data_visualization.mp4', fps=30, extra_args=['-vcodec', 'libx264'])
 
 
 # kernels = ["RBF", "linear", "quadratic", "Matern-1/2", "Matern-3/2", "Matern-5/2"]
