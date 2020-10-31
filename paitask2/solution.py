@@ -191,11 +191,18 @@ class BayesNet(torch.nn.Module):
         # TODO: make n random forward passes
         # compute the categorical softmax probabilities
         # marginalize the probabilities over the n forward passes
+
         yhats = []
         for entry in x:
-            yhat = [self.forward(entry) for i in range(0, num_forward_passes)]
-            mean = torch.mean(torch.stack(yhat), 0)
-            yhats.append(mean)
+            # n random forward passes
+            yhat = [self.forward(entry) for _ in range(0, num_forward_passes)]
+            yhat = torch.cat(yhat, dim=0)
+            # apply softmax
+            yhat = F.softmax(yhat, dim=0)
+            # marginalize
+            yhat = torch.reshape(yhat, (num_forward_passes, 10))
+            yhat = yhat.sum(dim=0)
+            yhats.append(yhat)
         yhats = torch.stack(yhats)
         assert yhats.shape == (batch_size, 10)
         return yhats
@@ -234,13 +241,12 @@ def train_network(model, optimizer, train_loader, num_epochs=100, pbar_update_in
             model.zero_grad()
             y_pred = model(batch_x)
             loss = criterion(y_pred, batch_y)
-            total_cost = None
             if type(model) == BayesNet:
-                # BayesNet implies additional KL-loss.
                 # TODO: enter your code here
+                # BayesNet implies additional KL-loss.
                 cost = model.kl_loss()
-                total_cost = loss + cost
-            total_cost.backward()
+                loss = loss + cost
+            loss.backward()
             optimizer.step()
 
             if k % pbar_update_interval == 0:
@@ -262,102 +268,95 @@ def evaluate_model(model, model_type, test_loader, batch_size, extended_eval, pr
     as well as the classification performance for OOD detection based
     on the predictive confidences.
     '''
-    accs_test = []
-    probs = torch.tensor([]).to(device)
-    labels = torch.tensor([]).long().to(device)
-    c = 0
-    for batch_x, batch_y in test_loader:
-        c += 1
-        batch_x = batch_x.to(device)
-        batch_y = batch_y.to(device)
+    model = model.cpu()
+    with torch.no_grad():
 
-        pred = model.predict_class_probs(batch_x)
-        probs = torch.cat((probs, pred))
-        labels = torch.cat((labels, batch_y))
-        acc = (pred.argmax(axis=1) == batch_y).sum().float().item() / (len(batch_y))
-        accs_test.append(acc)
+        accs_test = []
+        probs = torch.tensor([])
+        labels = torch.tensor([]).long()
 
-        del batch_x
-        del batch_y
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    if not private_test:
-        acc_mean = np.mean(accs_test)
-        ece_mean = ece(probs.detach().numpy(), labels.numpy())
-        print(f"Model type: {model_type}\nAccuracy = {acc_mean:.3f}\nECE = {ece_mean:.3f}")
-    else:
-        print("Using private test set.")
-
-    final_probs = probs.detach().numpy()
-
-    if extended_eval:
-        confidences = []
         for batch_x, batch_y in test_loader:
-            batch_x = batch_x.to(device)
             pred = model.predict_class_probs(batch_x)
-            confs, _ = pred.max(dim=1)
-            confidences.extend(confs.detach().numpy())
+            probs = torch.cat((probs, pred))
+            labels = torch.cat((labels, batch_y))
+            acc = (pred.argmax(axis=1) == batch_y).sum().float().item() / (len(batch_y))
+            accs_test.append(acc)
 
-        confidences = np.array(confidences)
+        if not private_test:
+            acc_mean = np.mean(accs_test)
+            ece_mean = ece(probs.detach().numpy(), labels.numpy())
+            print(f"Model type: {model_type}\nAccuracy = {acc_mean:.3f}\nECE = {ece_mean:.3f}")
+        else:
+            print("Using private test set.")
 
-        fig, axs = plt.subplots(ncols=10, figsize=(20, 2))
-        for ax, idx in zip(axs, confidences.argsort()[-10:]):
-            ax.imshow(test_loader.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
-            ax.axis("off")
-        fig.suptitle("Most confident predictions", size=20)
-        fig.savefig(f"mnist_most_confident_{model_type}.pdf")
+        final_probs = probs.detach().numpy()
 
-        fig, axs = plt.subplots(ncols=10, figsize=(20, 2))
-        for ax, idx in zip(axs, confidences.argsort()[:10]):
-            ax.imshow(test_loader.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
-            ax.axis("off")
-        fig.suptitle("Least confident predictions", size=20)
-        fig.savefig(f"mnist_least_confident_{model_type}.pdf")
+        if extended_eval:
+            confidences = []
+            for batch_x, batch_y in test_loader:
+                pred = model.predict_class_probs(batch_x)
+                confs, _ = pred.max(dim=1)
+                confidences.extend(confs.detach().numpy())
 
-        fmnist_path = "/data/fashion/fmnist.npz"
-        if not os.path.isfile(fmnist_path):
-            fmnist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data/fashion/fmnist.npz")
-        data_fmnist = np.load(fmnist_path)["x_test"]
-        dataset_fmnist = torch.utils.data.TensorDataset(torch.tensor(data_fmnist))
-        dataloader_fmnist = torch.utils.data.DataLoader(dataset_fmnist, batch_size=batch_size)
+            confidences = np.array(confidences)
 
-        confidences_fmnist = []
-        for batch_x in dataloader_fmnist:
-            pred = model.predict_class_probs(batch_x[0])
-            confs, _ = pred.max(dim=1)
-            confidences_fmnist.extend(confs.detach().numpy())
+            fig, axs = plt.subplots(ncols=10, figsize=(20, 2))
+            for ax, idx in zip(axs, confidences.argsort()[-10:]):
+                ax.imshow(test_loader.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
+                ax.axis("off")
+            fig.suptitle("Most confident predictions", size=20)
+            fig.savefig(f"mnist_most_confident_{model_type}.pdf")
 
-        confidences_fmnist = np.array(confidences_fmnist)
+            fig, axs = plt.subplots(ncols=10, figsize=(20, 2))
+            for ax, idx in zip(axs, confidences.argsort()[:10]):
+                ax.imshow(test_loader.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
+                ax.axis("off")
+            fig.suptitle("Least confident predictions", size=20)
+            fig.savefig(f"mnist_least_confident_{model_type}.pdf")
 
-        fig, axs = plt.subplots(ncols=10, figsize=(20, 2))
-        for ax, idx in zip(axs, confidences_fmnist.argsort()[-10:]):
-            ax.imshow(dataloader_fmnist.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
-            ax.axis("off")
-        fig.suptitle("Most confident predictions", size=20);
-        fig.savefig(f"fashionmnist_most_confident_{model_type}.pdf")
+            fmnist_path = "/data/fashion/fmnist.npz"
+            if not os.path.isfile(fmnist_path):
+                fmnist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data/fashion/fmnist.npz")
+            data_fmnist = np.load(fmnist_path)["x_test"]
+            dataset_fmnist = torch.utils.data.TensorDataset(torch.tensor(data_fmnist))
+            dataloader_fmnist = torch.utils.data.DataLoader(dataset_fmnist, batch_size=batch_size)
 
-        fig, axs = plt.subplots(ncols=10, figsize=(20, 2))
-        for ax, idx in zip(axs, confidences_fmnist.argsort()[:10]):
-            ax.imshow(dataloader_fmnist.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
-            ax.axis("off")
-        fig.suptitle("Least confident predictions", size=20);
-        fig.savefig(f"fashionmnist_least_confident_{model_type}.pdf")
+            confidences_fmnist = []
+            for batch_x in dataloader_fmnist:
+                pred = model.predict_class_probs(batch_x[0])
+                confs, _ = pred.max(dim=1)
+                confidences_fmnist.extend(confs.detach().numpy())
 
-        confidences_all = np.concatenate([confidences, confidences_fmnist])
-        dataset_labels = np.concatenate([np.ones_like(confidences), np.zeros_like(confidences_fmnist)])
+            confidences_fmnist = np.array(confidences_fmnist)
 
-        print(f"AUROC for MNIST vs. FashionMNIST OOD detection based on {model_type} confidence: "
-              f"{roc_auc_score(dataset_labels, confidences_all):.3f}")
-        print(f"AUPRC for MNIST vs. FashionMNIST OOD detection based on {model_type} confidence: "
-              f"{average_precision_score(dataset_labels, confidences_all):.3f}")
+            fig, axs = plt.subplots(ncols=10, figsize=(20, 2))
+            for ax, idx in zip(axs, confidences_fmnist.argsort()[-10:]):
+                ax.imshow(dataloader_fmnist.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
+                ax.axis("off")
+            fig.suptitle("Most confident predictions", size=20);
+            fig.savefig(f"fashionmnist_most_confident_{model_type}.pdf")
 
-    return final_probs
+            fig, axs = plt.subplots(ncols=10, figsize=(20, 2))
+            for ax, idx in zip(axs, confidences_fmnist.argsort()[:10]):
+                ax.imshow(dataloader_fmnist.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
+                ax.axis("off")
+            fig.suptitle("Least confident predictions", size=20);
+            fig.savefig(f"fashionmnist_least_confident_{model_type}.pdf")
+
+            confidences_all = np.concatenate([confidences, confidences_fmnist])
+            dataset_labels = np.concatenate([np.ones_like(confidences), np.zeros_like(confidences_fmnist)])
+
+            print(f"AUROC for MNIST vs. FashionMNIST OOD detection based on {model_type} confidence: "
+                  f"{roc_auc_score(dataset_labels, confidences_all):.3f}")
+            print(f"AUPRC for MNIST vs. FashionMNIST OOD detection based on {model_type} confidence: "
+                  f"{average_precision_score(dataset_labels, confidences_all):.3f}")
+
+        return final_probs
 
 
 def main(test_loader=None, private_test=False):
     num_epochs = 100  # You might want to adjust this
-    batch_size = 128  # Try playing around with this
+    batch_size = 256  # Try playing around with this
     print_interval = 100
     learning_rate = 5e-4  # Try playing around with this
     model_type = "bayesnet"  # Try changing this to "densenet" as a comparison
