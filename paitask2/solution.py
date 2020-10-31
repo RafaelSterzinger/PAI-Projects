@@ -244,8 +244,9 @@ def train_network(model, optimizer, train_loader, num_epochs=100, pbar_update_in
             if type(model) == BayesNet:
                 # TODO: enter your code here
                 # BayesNet implies additional KL-loss.
-                cost = model.kl_loss()
-                loss = loss + cost
+                complexity_loss = model.kl_loss() * 3.5
+                # loss => L^E, error loss; complexity_loss => L^C, complexity loss
+                loss = loss + complexity_loss
             loss.backward()
             optimizer.step()
 
@@ -333,14 +334,14 @@ def evaluate_model(model, model_type, test_loader, batch_size, extended_eval, pr
             for ax, idx in zip(axs, confidences_fmnist.argsort()[-10:]):
                 ax.imshow(dataloader_fmnist.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
                 ax.axis("off")
-            fig.suptitle("Most confident predictions", size=20);
+            fig.suptitle("Most confident predictions", size=20)
             fig.savefig(f"fashionmnist_most_confident_{model_type}.pdf")
 
             fig, axs = plt.subplots(ncols=10, figsize=(20, 2))
             for ax, idx in zip(axs, confidences_fmnist.argsort()[:10]):
                 ax.imshow(dataloader_fmnist.dataset.tensors[0][idx].numpy().reshape((28, 28)), cmap="gray")
                 ax.axis("off")
-            fig.suptitle("Least confident predictions", size=20);
+            fig.suptitle("Least confident predictions", size=20)
             fig.savefig(f"fashionmnist_least_confident_{model_type}.pdf")
 
             confidences_all = np.concatenate([confidences, confidences_fmnist])
@@ -358,7 +359,7 @@ def main(test_loader=None, private_test=False):
     num_epochs = 100  # You might want to adjust this
     batch_size = 256  # Try playing around with this
     print_interval = 100
-    learning_rate = 5e-4  # Try playing around with this
+    learning_rate = 10e-4  # Try playing around with this
     model_type = "bayesnet"  # Try changing this to "densenet" as a comparison
     extended_evaluation = False  # Set this to True for additional model evaluation
 
