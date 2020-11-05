@@ -160,8 +160,9 @@ class BayesianLayer(torch.nn.Module):
         and the Gaussian prior.
         '''
         # TODO: enter your code here
-        kl = np.log(self.prior_sigma) - logsigma + (torch.exp(logsigma) ** 2 + (mu - self.prior_mu) ** 2) / (
-                2 * self.prior_sigma ** 2) - 0.5
+        kl = np.log(self.prior_sigma) - logsigma + \
+             (torch.exp(logsigma) ** 2 - self.prior_sigma ** 2 + (mu - self.prior_mu) ** 2) / (
+                     2 * self.prior_sigma ** 2)
         return kl.sum()
 
 
@@ -195,13 +196,11 @@ class BayesNet(torch.nn.Module):
         yhats = []
         for entry in x:
             # n random forward passes
-            yhat = [self.forward(entry) for _ in range(0, num_forward_passes)]
-            yhat = torch.cat(yhat, dim=0)
+            yhat = torch.stack([self.forward(entry) for _ in range(0, num_forward_passes)])
             # apply softmax
-            yhat = F.softmax(yhat, dim=0)
+            yhat = F.softmax(yhat, dim=1)
             # marginalize
-            yhat = torch.reshape(yhat, (num_forward_passes, 10))
-            yhat = yhat.sum(dim=0)
+            yhat = yhat.sum(dim=0) / num_forward_passes
             yhats.append(yhat)
         yhats = torch.stack(yhats)
         assert yhats.shape == (batch_size, 10)
@@ -244,7 +243,7 @@ def train_network(model, optimizer, train_loader, num_epochs=100, pbar_update_in
             if type(model) == BayesNet:
                 # TODO: enter your code here
                 # BayesNet implies additional KL-loss.
-                complexity_loss = model.kl_loss() * 3.5
+                complexity_loss = model.kl_loss() * 8
                 # loss => L^E, error loss; complexity_loss => L^C, complexity loss
                 loss = loss + complexity_loss
             loss.backward()
