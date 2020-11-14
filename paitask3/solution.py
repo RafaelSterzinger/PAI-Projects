@@ -1,5 +1,7 @@
 import numpy as np
 import gpytorch
+import torch
+import torch.nn as nn
 from gpytorch.models import ExactGP
 from scipy.optimize import fmin_l_bfgs_b
 
@@ -12,7 +14,7 @@ class ExactGP(ExactGP):
     def __init__(self, train_x, train_y, mean_module, likelihood=gpytorch.likelihoods.GaussianLikelihood()):
         super().__init__(train_x, train_y, likelihood=likelihood)
         self.mean_module = mean_module
-        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=5/2))
+        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=5 / 2))
         self.covar_module.base_kernel.lengthscale = 0.5
 
     def forward(self, x):
@@ -27,19 +29,55 @@ class ExactGP(ExactGP):
         return self.covar_module.outputscale
 
 
+class GPUCB(nn.Module):
+    def __init__(self, gp, beta=2.0):
+        super().__init__()
+        self.gp = gp
+        self.gp.eval()
+        self.gp.likelihood.eval()
+        self.x = (torch.linspace(-1, 6, 1000) - 2.5) / 2
+        self.beta = beta
+        self.update_acquisition_function()
+
+    def update_gp(self, new_inputs, new_targets):
+        """Update GP with new points."""
+        inputs = torch.cat((self.gp.train_inputs[0], new_inputs.unsqueeze(-1)), dim=0)
+        targets = torch.cat((self.gp.train_targets, new_targets), dim=-1)
+        self.gp.set_train_data(inputs, targets, strict=False)
+        self.update_acquisition_function()
+
+    def get_best_value(self):
+        idx = self.gp.train_targets.argmax()
+        if len(self.gp.train_targets) == 1:
+            xmax, ymax = self.gp.train_inputs[idx], self.gp.train_targets[idx]
+        else:
+            xmax, ymax = self.gp.train_inputs[0][idx], self.gp.train_targets[idx]
+        return xmax, ymax
+
+    def update_acquisition_function(self):
+        pred = self.gp(self.x)
+        ucb = pred.mean + self.beta * pred.stddev  # Calculate UCB.
+        self._acquisition_function = ucb
+
+    @property
+    def acquisition_function(self):
+        return self._acquisition_function
+
+    def forward(self):
+        """Call the algorithm. """
+        with torch.no_grad(), gpytorch.settings.fast_pred_var():
+            y = self.acquisition_function
+            max_id = torch.argmax(y)
+            next_point = self.x[[[max_id]]]
+        return next_point
+
+
 class BO_algo():
     def __init__(self):
         """Initializes the algorithm with a parameter configuration. """
         # TODO: enter your code here
-        self.f_gp = ExactGP(gpytorch.means.ZeroMean())
-        self.v_gp = ExactGP(gpytorch.means.ConstantMean(1.5))
-        self.f_gp.eval()
-        self.v_gp.eval()
-        self.f_gp.likelihood.eval()
-        self.v_gp.likelihood.eval()
-        #self.x = x
-        #self.update_acquisition_function()
-        pass
+        self.f_GPUCB = None
+        self.v_GPUCB = None
 
     def next_recommendation(self):
         """
@@ -52,8 +90,10 @@ class BO_algo():
         """
 
         # TODO: enter your code here
+        if self.f_GPUCB is None and self.v_GPUCB is None:
+            return np.array([[1]])
+
         # In implementing this function, you may use optimize_acquisition_function() defined below.
-        raise NotImplementedError
 
     def optimize_acquisition_function(self):
         """
@@ -64,9 +104,11 @@ class BO_algo():
         x_opt: np.ndarray
             1 x domain.shape[0] array containing the point that maximize the acquisition function.
         """
+        self.v_GPUCB.update_acquisition_function()
+        self.f_GPUCB.update_acquisition_function()
 
-        def objective(x):
-            return -self.acquisition_function(x)
+    def objective(x):
+        # return -self.acquisition_function(x)
 
         f_values = []
         x_values = []
@@ -99,7 +141,7 @@ class BO_algo():
         """
 
         # TODO: enter your code here
-        raise NotImplementedError
+        return self.f_GPUCB()
 
     def add_data_point(self, x, f, v):
         """
@@ -114,9 +156,12 @@ class BO_algo():
         v: np.ndarray
             Model training speed
         """
-
-        # TODO: enter your code here
-        raise NotImplementedError
+        if self.f_GPUCB is None and self.v_GPUCB is None:
+            self.f_GPUCB = GPUCB(ExactGP(x, f, gpytorch.means.ZeroMean()))
+            self.v_GPUCB = GPUCB(ExactGP(x, v, gpytorch.means.ConstantMean(1.5)))
+        else:
+            self.f_GPUCB.update_gp(x, f)
+            self.f_GPUCB.update_gp(x, v)
 
     def get_solution(self):
         """
