@@ -7,6 +7,8 @@ from scipy.optimize import fmin_l_bfgs_b
 
 domain = np.array([[0, 5]])
 
+x0_init_guess = domain[:, 0] + (domain[:, 1] - domain[:, 0]) * np.random.rand(domain.shape[0])
+
 """ Solution """
 
 
@@ -35,7 +37,7 @@ class GPUCB(nn.Module):
         self.gp = gp
         self.gp.eval()
         self.gp.likelihood.eval()
-        self.x = (torch.linspace(-1, 6, 1000) - 2.5) / 2
+        self.x = (torch.linspace(-1, 6, 1000) - 2.5) / 2        # TODO: take from GP or x0_init?
         self.beta = beta
         self.update_acquisition_function()
 
@@ -91,7 +93,9 @@ class BO_algo():
 
         # TODO: enter your code here
         if self.f_GPUCB is None and self.v_GPUCB is None:
-            return np.array([[1]])
+            return x0_init_guess
+        else:
+            return self.optimize_acquisition_function()         # return x with highest optimized f
 
         # In implementing this function, you may use optimize_acquisition_function() defined below.
 
@@ -107,16 +111,15 @@ class BO_algo():
         self.v_GPUCB.update_acquisition_function()
         self.f_GPUCB.update_acquisition_function()
 
-    def objective(x):
-        # return -self.acquisition_function(x)
+        def objective(x):
+            return -self.acquisition_function(x)
 
         f_values = []
         x_values = []
 
         # Restarts the optimization 20 times and pick best solution
         for _ in range(20):
-            x0 = domain[:, 0] + (domain[:, 1] - domain[:, 0]) * \
-                 np.random.rand(domain.shape[0])
+            x0 = x0_init_guess
             result = fmin_l_bfgs_b(objective, x0=x0, bounds=domain,
                                    approx_grad=True)
             x_values.append(np.clip(result[0], *domain[0]))
@@ -156,12 +159,13 @@ class BO_algo():
         v: np.ndarray
             Model training speed
         """
+        # TODO: enter your code here
         if self.f_GPUCB is None and self.v_GPUCB is None:
             self.f_GPUCB = GPUCB(ExactGP(x, f, gpytorch.means.ZeroMean()))
             self.v_GPUCB = GPUCB(ExactGP(x, v, gpytorch.means.ConstantMean(1.5)))
         else:
             self.f_GPUCB.update_gp(x, f)
-            self.f_GPUCB.update_gp(x, v)
+            self.v_GPUCB.update_gp(x, v)
 
     def get_solution(self):
         """
@@ -202,9 +206,9 @@ def main():
     agent = BO_algo()
 
     # Loop until budget is exhausted
-    for j in range(20):
+    for j in range(20):                         # query_new_point()
         # Get next recommendation
-        x = agent.next_recommendation()
+        x = agent.next_recommendation()         # algorithm() aka call GPUCB
 
         # Check for valid shape
         assert x.shape == (1, domain.shape[0]), \
@@ -212,9 +216,9 @@ def main():
             f"shape (1, {domain.shape[0]})"
 
         # Obtain objective and constraint observation
-        obj_val = f(x)
-        cost_val = v(x)
-        agent.add_data_point(x, obj_val, cost_val)
+        obj_val = f(x)                          # objective_function
+        cost_val = v(x)                         # objective_function
+        agent.add_data_point(x, obj_val, cost_val) # regret.append() AND algorithm.update_gp(x, y)
 
     # Validate solution
     solution = np.atleast_2d(agent.get_solution())
