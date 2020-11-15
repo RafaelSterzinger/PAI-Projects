@@ -7,15 +7,18 @@ from scipy.optimize import fmin_l_bfgs_b
 
 domain = np.array([[0, 5]])
 
-x0_init_guess = domain[:, 0] + (domain[:, 1] - domain[:, 0]) * np.random.rand(domain.shape[0])
+def x0_init_guess():
+    return domain[:, 0] + (domain[:, 1] - domain[:, 0]) * np.random.rand(domain.shape[0])
 
 """ Solution """
 
 
 class ExactGP(ExactGP):
-    def __init__(self, train_x, train_y, mean_module, likelihood=gpytorch.likelihoods.GaussianLikelihood()):
+    def __init__(self, train_x, train_y, mean_module, variance, likelihood=gpytorch.likelihoods.GaussianLikelihood()):
+        likelihood.noise_covar.noise = variance #** 2
         super().__init__(train_x, train_y, likelihood=likelihood)
         self.mean_module = mean_module
+        # TODO: set variance
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=5 / 2))
         self.covar_module.base_kernel.lengthscale = 0.5
 
@@ -37,16 +40,20 @@ class GPUCB(nn.Module):
         self.gp = gp
         self.gp.eval()
         self.gp.likelihood.eval()
-        self.x = (torch.linspace(-1, 6, 1000) - 2.5) / 2        # TODO: take from GP or x0_init?
+        #self.x = torch.linspace(0, 5, 1000)        # possible x values
         self.beta = beta
-        self.update_acquisition_function()
+        # self.update_acquisition_function()
 
     def update_gp(self, new_inputs, new_targets):
         """Update GP with new points."""
-        inputs = torch.cat((self.gp.train_inputs[0], new_inputs.unsqueeze(-1)), dim=0)
-        targets = torch.cat((self.gp.train_targets, new_targets), dim=-1)
+        inputs = torch.cat((self.gp.train_inputs[0], new_inputs), dim=0)
+        if(len(self.gp.train_targets.shape) == 0):
+            old_targets = self.gp.train_targets.unsqueeze(-1)
+        else:
+            old_targets = self.gp.train_targets
+        targets = torch.cat((old_targets, new_targets), dim=-1)
         self.gp.set_train_data(inputs, targets, strict=False)
-        self.update_acquisition_function()
+        # self.update_acquisition_function()
 
     def get_best_value(self):
         idx = self.gp.train_targets.argmax()
@@ -56,22 +63,24 @@ class GPUCB(nn.Module):
             xmax, ymax = self.gp.train_inputs[0][idx], self.gp.train_targets[idx]
         return xmax, ymax
 
-    def update_acquisition_function(self):
-        pred = self.gp(self.x)
-        ucb = pred.mean + self.beta * pred.stddev  # Calculate UCB.
-        self._acquisition_function = ucb
+    def get_acquisition_function(self, x):
+        with torch.no_grad():
+            pred = self.gp(x) #self.x)                     # GP.forward(x)
+            ucb = pred.mean + self.beta * pred.stddev  # Calculate UCB.
+            # self._acquisition_function = ucb
+            return ucb
 
-    @property
-    def acquisition_function(self):
-        return self._acquisition_function
+    #@property
+    #def acquisition_function(self):
+    #    return self._acquisition_function
 
-    def forward(self):
-        """Call the algorithm. """
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            y = self.acquisition_function
-            max_id = torch.argmax(y)
-            next_point = self.x[[[max_id]]]
-        return next_point
+    #def forward(self):
+    #    """Call the algorithm. """
+    #    with torch.no_grad(), gpytorch.settings.fast_pred_var():
+    #        y = self.acquisition_function
+    #        max_id = torch.argmax(y)
+    #        next_point = self.x[[[max_id]]]
+    #    return next_point
 
 
 class BO_algo():
@@ -93,7 +102,7 @@ class BO_algo():
 
         # TODO: enter your code here
         if self.f_GPUCB is None and self.v_GPUCB is None:
-            return x0_init_guess
+            return np.array([x0_init_guess()])
         else:
             return self.optimize_acquisition_function()         # return x with highest optimized f
 
@@ -108,22 +117,21 @@ class BO_algo():
         x_opt: np.ndarray
             1 x domain.shape[0] array containing the point that maximize the acquisition function.
         """
-        self.v_GPUCB.update_acquisition_function()
-        self.f_GPUCB.update_acquisition_function()
-
         def objective(x):
             return -self.acquisition_function(x)
+
 
         f_values = []
         x_values = []
 
         # Restarts the optimization 20 times and pick best solution
         for _ in range(20):
-            x0 = x0_init_guess
+            x0 = x0_init_guess()
             result = fmin_l_bfgs_b(objective, x0=x0, bounds=domain,
                                    approx_grad=True)
             x_values.append(np.clip(result[0], *domain[0]))
             f_values.append(-result[1])
+
 
         ind = np.argmax(f_values)
         return np.atleast_2d(x_values[ind])
@@ -144,7 +152,7 @@ class BO_algo():
         """
 
         # TODO: enter your code here
-        return self.f_GPUCB()
+        return self.f_GPUCB.get_acquisition_function(torch.tensor(x))
 
     def add_data_point(self, x, f, v):
         """
@@ -160,12 +168,18 @@ class BO_algo():
             Model training speed
         """
         # TODO: enter your code here
+        x = torch.tensor(x)
+        f = torch.tensor(f)
+        v = torch.tensor(v)
         if self.f_GPUCB is None and self.v_GPUCB is None:
-            self.f_GPUCB = GPUCB(ExactGP(x, f, gpytorch.means.ZeroMean()))
-            self.v_GPUCB = GPUCB(ExactGP(x, v, gpytorch.means.ConstantMean(1.5)))
+            self.f_GPUCB = GPUCB(ExactGP(x, f, gpytorch.means.ZeroMean(), 0.5))
+            mean = gpytorch.means.ConstantMean()
+            mean.initialize(constant=1.5)
+            mean.constant.requires_grad = False
+            self.v_GPUCB = GPUCB(ExactGP(x, v, mean, np.sqrt(2)))
         else:
-            self.f_GPUCB.update_gp(x, f)
-            self.v_GPUCB.update_gp(x, v)
+            self.f_GPUCB.update_gp(x, f.unsqueeze(-1))
+            self.v_GPUCB.update_gp(x, v.unsqueeze(-1))
 
     def get_solution(self):
         """
@@ -178,7 +192,7 @@ class BO_algo():
         """
 
         # TODO: enter your code here
-        raise NotImplementedError
+        return self.f_GPUCB.get_best_value()[0]
 
 
 """ Toy problem to check code works as expected """
