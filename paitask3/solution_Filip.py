@@ -8,33 +8,30 @@ import sys
 
 domain = np.array([[0, 5]])
 
-
-# In[96]:
-
-
 class ExactGP(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, mean_module, variance, likelihood=gpytorch.likelihoods.GaussianLikelihood()):
+        
         likelihood.noise_covar.noise = variance #** 2
         super().__init__(train_x, train_y, likelihood=likelihood)
         self.mean_module = mean_module
-        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=5 / 2))
+        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu = 5 / 2))
         self.covar_module.base_kernel.lengthscale = 0.5
 
     def forward(self, x):
-        """Forward computation of GP."""
+        
         mean_x = self.mean_module(x)
         covar_x = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
 
-# In[97]:
-
-
 class BO_EI(nn.Module):
     """Abstract Bayesian Optimization class. ."""
     def __init__(self, gp_f, gp_v):
+        
         super().__init__()
+        
         self.xi = 0.01
+        
         self.gp_f = gp_f
         self.gp_v = gp_v
         
@@ -43,45 +40,34 @@ class BO_EI(nn.Module):
         
         self.gp_v.eval()
         self.gp_v.likelihood.eval()
-            
-    def update_gp_f(self, new_inputs, new_targets):
-        """Update GP with new points."""
-        inputs = torch.cat((self.gp_f.train_inputs[0], new_inputs.unsqueeze(-1)), dim=0)
-        targets = torch.cat((self.gp_f.train_targets, new_targets), dim=-1)
-        self.gp_f.set_train_data(inputs, targets, strict=False)
-                
-    def update_gp_v(self, new_inputs, new_targets):
-        """Update GP with new points."""
-        inputs = torch.cat((self.gp_v.train_inputs[0], new_inputs.unsqueeze(-1)), dim=0)
-        targets = torch.cat((self.gp_v.train_targets, new_targets), dim=-1)
-        self.gp_v.set_train_data(inputs, targets, strict=False)
-    
-    def get_best_value_f(self):
-        idx = self.gp_f.train_targets.argmax()
         
-        ##sys.stdout.write(str(idx) + str(len(self.gp_f.train_inputs)) + " " + str(len(self.gp_f.train_targets)))
-        ##sys.stdout.write("\n")
+    def update_gp (self, new_inputs, new_targets, is_gp_f):
         
-        if len(self.gp_f.train_targets) == 1:
-            xmax, ymax = self.gp_f.train_inputs[idx], self.gp_f.train_targets[idx]
+        if is_gp_f:
+            inputs = torch.cat([self.gp_f.train_inputs[0], new_inputs.unsqueeze(-1)], dim = 0)
+            targets = torch.cat([self.gp_f.train_targets, new_targets], dim = -1)
+            self.gp_f.set_train_data(inputs, targets, strict=False)
         else:
-            xmax, ymax = self.gp_f.train_inputs[0][idx], self.gp_f.train_targets[idx]
-        return xmax, ymax 
+            inputs = torch.cat([self.gp_v.train_inputs[0], new_inputs.unsqueeze(-1)], dim = 0)
+            targets = torch.cat([self.gp_v.train_targets, new_targets], dim = -1)
+            self.gp_v.set_train_data(inputs, targets, strict=False)
     
-    def get_best_value_v(self):
-        idx = self.gp_v.train_targets.argmax()
-        #sys.stdout.write(str(idx) + str(len(self.gp_v.train_inputs)) + " " + str(len(self.gp_v.train_targets)))
-        #sys.stdout.write("\n")
-        if len(self.gp_v.train_targets) == 1:
-            xmax, ymax = self.gp_v.train_inputs[idx], self.gp_v.train_targets[idx]
+    def get_best_value(self, is_gp_f):
+        
+        if is_gp_f:
+            idx = self.gp_f.train_targets.argmax()
+            xmax = self.gp_f.train_inputs[0][idx]
+            ymax = self.gp_f.train_targets[idx]
         else:
-            xmax, ymax = self.gp_v.train_inputs[0][idx], self.gp_v.train_targets[idx]
+            idx = self.gp_v.train_targets.argmax()
+            xmax = self.gp_v.train_inputs[0][idx]
+            ymax = self.gp_v.train_targets[idx]
         return xmax, ymax 
-         
+        
     def get_acquisition_function(self, x):
         
-        xmax, ymax = self.get_best_value_f()
-        xmax1, vmax = self.get_best_value_v()
+        xmax, ymax = self.get_best_value(True)
+        xmax1, vmax = self.get_best_value(False)
         
         out_f = self.gp_f(x)
         out_v = self.gp_v(x)
@@ -90,33 +76,17 @@ class BO_EI(nn.Module):
         Z1 = (out_f.mean - ymax - self.xi) / out_f.stddev 
         Z2 = (out_v.mean - vmax - self.xi) / out_v.stddev 
         
-        idx = out_f.stddev == 0
-        self._acquisition_function = (out_f.mean - ymax - self.xi) * dist.cdf(Z1) + out_f.stddev * torch.exp(dist.log_prob(Z1)) * dist.cdf(Z2)
-        self._acquisition_function[idx] = 0 
-        return self._acquisition_function.detach().numpy()[0]
-
-
-# In[98]:
-
-
-""" Solution """
-
+        acquisition_function = (out_f.mean - ymax - self.xi) * dist.cdf(Z1) + out_f.stddev * torch.exp(dist.log_prob(Z1)) * dist.cdf(Z2)
+        return acquisition_function.detach().numpy()[0]
+    
 
 class BO_algo():
+    
     def __init__(self):
-        """Initializes the algorithm with a parameter configuration. """
 
         self.bo_ei = None
         
     def next_recommendation(self):
-        """
-        Recommend the next input to sample.
-
-        Returns
-        -------
-        recommendation: np.ndarray
-            1 x domain.shape[0] array containing the next point to evaluate
-        """
 
         if self.bo_ei is None:
             x0 = domain[:, 0] + (domain[:, 1] - domain[:, 0]) * np.random.rand(domain.shape[0]) #type [2.5]
@@ -125,14 +95,6 @@ class BO_algo():
             return self.optimize_acquisition_function()
 
     def optimize_acquisition_function(self):
-        """
-        Optimizes the acquisition function.
-
-        Returns
-        -------
-        x_opt: np.ndarray
-            1 x domain.shape[0] array containing the point that maximize the acquisition function.
-        """
 
         def objective(x):
             return -self.acquisition_function(x)
@@ -142,9 +104,8 @@ class BO_algo():
 
         # Restarts the optimization 20 times and pick best solution
         for _ in range(20):
-            x0 = domain[:, 0] + (domain[:, 1] - domain[:, 0]) *                  np.random.rand(domain.shape[0])
-            result = fmin_l_bfgs_b(objective, x0=x0, bounds=domain,
-                                   approx_grad=True)
+            x0 = domain[:, 0] + (domain[:, 1] - domain[:, 0]) * np.random.rand(domain.shape[0])
+            result = fmin_l_bfgs_b(objective, x0=x0, bounds=domain, approx_grad=True)
             x_values.append(np.clip(result[0], *domain[0]))
             f_values.append(-result[1])
 
@@ -152,66 +113,42 @@ class BO_algo():
         return np.atleast_2d(x_values[ind])
 
     def acquisition_function(self, x):
-        """
-        Compute the acquisition function.
 
-        Parameters
-        ----------
-        x: np.ndarray
-            x in domain of f
-
-        Returns
-        ------
-        af_value: float
-            Value of the acquisition function at x
-        """
         return self.bo_ei.get_acquisition_function(torch.from_numpy(x))
 
 
     def add_data_point(self, x, f, v):
-        """
-        Add data points to the model.
 
-        Parameters
-        ----------
-        x: np.ndarray
-            Hyperparameters
-        f: np.ndarray
-            Model accuracy
-        v: np.ndarray
-            Model training speed
-        """
-        f = torch.tensor(f)
+        x = torch.from_numpy(x[0])
+        f = torch.from_numpy(f)
         v = torch.tensor(np.log(v) - np.log(1.2))
         
         if self.bo_ei is None:
             
-            x = torch.tensor(x)
             mean = gpytorch.means.ConstantMean()
             mean.initialize(constant=1.5)
             mean.constant.requires_grad = False
             
-            self.bo_ei = BO_EI(ExactGP(x, f.unsqueeze(-1), gpytorch.means.ZeroMean(), 0.5), ExactGP(x, v.unsqueeze(-1), mean, np.sqrt(2)))
+            self.bo_ei = BO_EI(ExactGP(x, f, gpytorch.means.ZeroMean(), 0.5), ExactGP(x, v, mean, np.sqrt(2)))
             
         else:    
-            x = torch.tensor(x[0])
-            self.bo_ei.update_gp_f(x, f.unsqueeze(-1)) #alternatively could also unsqueeze up
-            self.bo_ei.update_gp_v(x, v.unsqueeze(-1))
+            self.bo_ei.update_gp(x, f, True)
+            self.bo_ei.update_gp(x, v, False)
         
         
     def get_solution(self):
-        """
-        Return x_opt that is believed to be the maximizer of f.
 
-        Returns
-        -------
-        solution: np.ndarray
-            1 x domain.shape[0] array containing the optimal solution of the problem
-        """
-
-        # TODO: enter your code here
-        return self.bo_ei.get_best_value_f()[0]
-
+        mask = self.bo_ei.gp_v.train_targets.detach().numpy() >= 0
+        f_vals = self.bo_ei.gp_f.train_targets.detach().numpy()[mask]
+        x_vals = self.bo_ei.gp_f.train_inputs[0].detach().numpy()[mask]
+        
+        if len(f_vals) == 0:
+            idx = self.bo_ei.gp_f.train_targets.detach().numpy().argmax()
+            xmax, ymax = self.bo_ei.gp_f.train_inputs[0][idx]
+        else:
+            idx = f_vals.argmax()
+            xmax, ymax = x_vals[idx]
+        return xmax
 
 """ Toy problem to check code works as expected """
 
@@ -265,4 +202,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
