@@ -144,10 +144,10 @@ class BO_algo():
         
         if len(f_vals) == 0:
             idx = self.bo_ei.gp_f.train_targets.detach().numpy().argmax()
-            xmax, ymax = self.bo_ei.gp_f.train_inputs[0][idx]
+            xmax = self.bo_ei.gp_f.train_inputs[0][idx]
         else:
             idx = f_vals.argmax()
-            xmax, ymax = x_vals[idx]
+            xmax = x_vals[idx]
         return xmax
 
 """ Toy problem to check code works as expected """
