@@ -88,8 +88,8 @@ class BO_algo():
 
         if not self.init:
             self.init = True
-            return domain[:, 0] + (domain[:, 1] - domain[:, 0]) * \
-                 np.random.rand(domain.shape[0])
+            return np.atleast_2d(domain[:, 0] + (domain[:, 1] - domain[:, 0]) * \
+                 np.random.rand(domain.shape[0]))
         else:
             return self.optimize_acquisition_function()
 
@@ -110,7 +110,7 @@ class BO_algo():
         x_values = []
 
         # Restarts the optimization 20 times and pick best solution
-        for _ in range(20):
+        for _ in range(40):
             x0 = domain[:, 0] + (domain[:, 1] - domain[:, 0]) * \
                  np.random.rand(domain.shape[0])
             result = fmin_l_bfgs_b(objective, x0=x0, bounds=domain,
@@ -220,7 +220,7 @@ def main():
     agent = BO_algo()
 
     # Loop until budget is exhausted
-    for j in range(20):
+    for j in range(30):
         # Get next recommendation
         x = agent.next_recommendation()
 
