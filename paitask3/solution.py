@@ -1,26 +1,20 @@
 import numpy as np
 import gpytorch
+import gpytorch.means as means
+import gpytorch.kernels as kernels
 import torch
-import torch.nn as nn
-from gpytorch.models import ExactGP
 from scipy.optimize import fmin_l_bfgs_b
 
 domain = np.array([[0, 5]])
 
-def x0_init_guess():
-    return domain[:, 0] + (domain[:, 1] - domain[:, 0]) * np.random.rand(domain.shape[0])
-
 """ Solution """
 
 
-class ExactGP(ExactGP):
-    def __init__(self, train_x, train_y, mean_module, variance, likelihood=gpytorch.likelihoods.GaussianLikelihood()):
-        likelihood.noise_covar.noise = variance #** 2
-        super().__init__(train_x, train_y, likelihood=likelihood)
+class ExactGP(gpytorch.models.ExactGP):
+    def __init__(self, train_x, train_y, mean_module, covar_module):
+        super().__init__(train_x, train_y, likelihood=gpytorch.likelihoods.GaussianLikelihood())
         self.mean_module = mean_module
-        # TODO: set variance
-        self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.MaternKernel(nu=5 / 2))
-        self.covar_module.base_kernel.lengthscale = 0.5
+        self.covar_module = covar_module
 
     def forward(self, x):
         """Forward computation of GP."""
@@ -28,67 +22,57 @@ class ExactGP(ExactGP):
         covar_x = self.covar_module(x)
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
-    @property
-    def output_scale(self):
-        """Get output scale."""
-        return self.covar_module.outputscale
-
-
-class GPUCB(nn.Module):
-    def __init__(self, gp, beta=2.0):
-        super().__init__()
-        self.gp = gp
-        self.gp.eval()
-        self.gp.likelihood.eval()
-        #self.x = torch.linspace(0, 5, 1000)        # possible x values
-        self.beta = beta
-        # self.update_acquisition_function()
-
-    def update_gp(self, new_inputs, new_targets):
-        """Update GP with new points."""
-        inputs = torch.cat((self.gp.train_inputs[0], new_inputs), dim=0)
-        if(len(self.gp.train_targets.shape) == 0):
-            old_targets = self.gp.train_targets.unsqueeze(-1)
-        else:
-            old_targets = self.gp.train_targets
-        targets = torch.cat((old_targets, new_targets), dim=-1)
-        self.gp.set_train_data(inputs, targets, strict=False)
-        # self.update_acquisition_function()
-
-    def get_best_value(self):
-        idx = self.gp.train_targets.argmax()
-        if len(self.gp.train_targets) == 1:
-            xmax, ymax = self.gp.train_inputs[idx], self.gp.train_targets[idx]
-        else:
-            xmax, ymax = self.gp.train_inputs[0][idx], self.gp.train_targets[idx]
-        return xmax, ymax
-
-    def get_acquisition_function(self, x):
-        with torch.no_grad():
-            pred = self.gp(x) #self.x)                     # GP.forward(x)
-            ucb = pred.mean + self.beta * pred.stddev  # Calculate UCB.
-            # self._acquisition_function = ucb
-            return ucb
-
-    #@property
-    #def acquisition_function(self):
-    #    return self._acquisition_function
-
-    #def forward(self):
-    #    """Call the algorithm. """
-    #    with torch.no_grad(), gpytorch.settings.fast_pred_var():
-    #        y = self.acquisition_function
-    #        max_id = torch.argmax(y)
-    #        next_point = self.x[[[max_id]]]
-    #    return next_point
-
 
 class BO_algo():
     def __init__(self):
         """Initializes the algorithm with a parameter configuration. """
-        # TODO: enter your code here
-        self.f_GPUCB = None
-        self.v_GPUCB = None
+        self.min_v = 1.2
+        self.xi = 0.01
+
+        hypers_f = {
+            'likelihood.noise': torch.tensor(0.15),
+            'covar_module.base_kernel.lengthscale': torch.tensor(0.5),
+            'covar_module.outputscale': torch.tensor(0.5),
+        }
+        self.gp_f = ExactGP(torch.Tensor(), torch.Tensor(), means.ZeroMean(),
+                            kernels.ScaleKernel(kernels.MaternKernel(2.5)))
+        self.gp_f.initialize(**hypers_f)
+        self.gp_f.eval()
+        self.gp_f.likelihood.eval()
+
+        hypers_v = {
+            'likelihood.noise': torch.tensor(0.0001),
+            'covar_module.base_kernel.lengthscale': torch.tensor(np.sqrt(2)),
+            'covar_module.outputscale': torch.tensor(0.5),
+            'mean_module.constant': torch.tensor(1.5)
+        }
+        self.gp_v = ExactGP(torch.Tensor(), torch.Tensor(), means.ConstantMean(),
+                            kernels.ScaleKernel(kernels.MaternKernel(2.5)))
+        self.gp_v.initialize(**hypers_v)
+        self.gp_v.eval()
+        self.gp_v.likelihood.eval()
+
+        self.init = False
+
+        self.x = np.array([])
+        self.f = np.array([])
+        self.v = np.array([])
+
+    def update_gp_f(self, new_inputs, new_targets):
+        """Update GP with new points."""
+        inputs = torch.cat((self.gp_f.train_inputs[0], new_inputs.unsqueeze(-1)), dim=0)
+        targets = torch.cat((self.gp_f.train_targets, new_targets), dim=-1)
+        self.gp_f.set_train_data(inputs, targets, strict=False)
+
+    def update_gp_v(self, new_inputs, new_targets):
+        """Update GP with new points."""
+        inputs = torch.cat((self.gp_v.train_inputs[0], new_inputs.unsqueeze(-1)), dim=0)
+        targets = torch.cat((self.gp_v.train_targets, new_targets), dim=-1)
+        self.gp_v.set_train_data(inputs, targets, strict=False)
+
+    def get_best_f(self):
+        idx = self.gp_f.train_targets.argmax()
+        return self.gp_f.train_inputs[0][idx], self.gp_f.train_targets[idx]
 
     def next_recommendation(self):
         """
@@ -100,13 +84,14 @@ class BO_algo():
             1 x domain.shape[0] array containing the next point to evaluate
         """
 
-        # TODO: enter your code here
-        if self.f_GPUCB is None and self.v_GPUCB is None:
-            return np.array([x0_init_guess()])
-        else:
-            return self.optimize_acquisition_function()         # return x with highest optimized f
-
         # In implementing this function, you may use optimize_acquisition_function() defined below.
+
+        if not self.init:
+            self.init = True
+            return domain[:, 0] + (domain[:, 1] - domain[:, 0]) * \
+                 np.random.rand(domain.shape[0])
+        else:
+            return self.optimize_acquisition_function()
 
     def optimize_acquisition_function(self):
         """
@@ -117,21 +102,21 @@ class BO_algo():
         x_opt: np.ndarray
             1 x domain.shape[0] array containing the point that maximize the acquisition function.
         """
+
         def objective(x):
             return -self.acquisition_function(x)
-
 
         f_values = []
         x_values = []
 
         # Restarts the optimization 20 times and pick best solution
         for _ in range(20):
-            x0 = x0_init_guess()
+            x0 = domain[:, 0] + (domain[:, 1] - domain[:, 0]) * \
+                 np.random.rand(domain.shape[0])
             result = fmin_l_bfgs_b(objective, x0=x0, bounds=domain,
                                    approx_grad=True)
             x_values.append(np.clip(result[0], *domain[0]))
             f_values.append(-result[1])
-
 
         ind = np.argmax(f_values)
         return np.atleast_2d(x_values[ind])
@@ -151,8 +136,20 @@ class BO_algo():
             Value of the acquisition function at x
         """
 
-        # TODO: enter your code here
-        return self.f_GPUCB.get_acquisition_function(torch.tensor(x))
+        xmax, ymax = self.get_best_f()
+        x = torch.from_numpy(x).float()
+        out_f = self.gp_f(x)
+        out_v = self.gp_v(x)
+        dist = torch.distributions.Normal(torch.tensor([0.]), torch.tensor([1.]))
+        Z_f = (out_f.mean - ymax - self.xi) / out_f.stddev
+        Z_v = (out_v.mean - self.min_v - self.xi) / out_v.stddev
+        impro_v = dist.cdf(Z_v)
+        if((impro_v < 0.5).item()):
+            return impro_v.item()
+        else:
+            acquisition_function = ((out_f.mean - ymax - self.xi) * dist.cdf(Z_f) + out_f.stddev * torch.exp(
+                dist.log_prob(Z_f))) * impro_v
+            return acquisition_function.item()
 
     def add_data_point(self, x, f, v):
         """
@@ -167,19 +164,15 @@ class BO_algo():
         v: np.ndarray
             Model training speed
         """
-        # TODO: enter your code here
-        x = torch.tensor(x)
-        f = torch.tensor(f)
-        v = torch.tensor(v)
-        if self.f_GPUCB is None and self.v_GPUCB is None:
-            self.f_GPUCB = GPUCB(ExactGP(x, f, gpytorch.means.ZeroMean(), 0.5))
-            mean = gpytorch.means.ConstantMean()
-            mean.initialize(constant=1.5)
-            mean.constant.requires_grad = False
-            self.v_GPUCB = GPUCB(ExactGP(x, v, mean, np.sqrt(2)))
-        else:
-            self.f_GPUCB.update_gp(x, f.unsqueeze(-1))
-            self.v_GPUCB.update_gp(x, v.unsqueeze(-1))
+        self.x = np.append(self.x, x.item())
+        self.f = np.append(self.f, f)
+        self.v = np.append(self.v, v)
+
+        x = np.reshape(x, [1])
+        f = np.reshape(f, [1])
+        v = np.reshape(v, [1])
+        self.update_gp_f(torch.Tensor(x), torch.Tensor(f))
+        self.update_gp_v(torch.Tensor(x), torch.Tensor(v))
 
     def get_solution(self):
         """
@@ -191,8 +184,15 @@ class BO_algo():
             1 x domain.shape[0] array containing the optimal solution of the problem
         """
 
-        # TODO: enter your code here
-        return self.f_GPUCB.get_best_value()[0]
+        mask = self.v >= self.min_v
+        f_vals = self.f[mask]
+        x_vals = self.x[mask]
+
+        if len(f_vals) == 0:
+            return self.optimize_acquisition_function()
+        else:
+            idx = f_vals.argmax()
+            return x_vals[idx]
 
 
 """ Toy problem to check code works as expected """
@@ -220,9 +220,9 @@ def main():
     agent = BO_algo()
 
     # Loop until budget is exhausted
-    for j in range(20):                         # query_new_point()
+    for j in range(20):
         # Get next recommendation
-        x = agent.next_recommendation()         # algorithm() aka call GPUCB
+        x = agent.next_recommendation()
 
         # Check for valid shape
         assert x.shape == (1, domain.shape[0]), \
@@ -230,9 +230,9 @@ def main():
             f"shape (1, {domain.shape[0]})"
 
         # Obtain objective and constraint observation
-        obj_val = f(x)                          # objective_function
-        cost_val = v(x)                         # objective_function
-        agent.add_data_point(x, obj_val, cost_val) # regret.append() AND algorithm.update_gp(x, y)
+        obj_val = f(x)
+        cost_val = v(x)
+        agent.add_data_point(x, obj_val, cost_val)
 
     # Validate solution
     solution = np.atleast_2d(agent.get_solution())
@@ -250,7 +250,7 @@ def main():
         regret = (0 - f(solution))
 
     print(f'Optimal value: 0\nProposed solution {solution}\nSolution value '
-          f'{f(solution)}\nRegret{regret}')
+          f'{f(solution)}\nRegret {regret}')
 
 
 if __name__ == "__main__":
