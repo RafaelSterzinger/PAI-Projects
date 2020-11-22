@@ -27,7 +27,7 @@ class BO_algo():
     def __init__(self):
         """Initializes the algorithm with a parameter configuration. """
         self.min_v = 1.2
-        self.xi = 0.01
+        self.xi = 0.02
 
         hypers_f = {
             'likelihood.noise': torch.tensor(0.15),
@@ -42,8 +42,8 @@ class BO_algo():
 
         hypers_v = {
             'likelihood.noise': torch.tensor(0.0001),
-            'covar_module.base_kernel.lengthscale': torch.tensor(np.sqrt(2)),
-            'covar_module.outputscale': torch.tensor(0.5),
+            'covar_module.base_kernel.lengthscale': torch.tensor(0.5),
+            'covar_module.outputscale': torch.tensor(np.sqrt(2)),
             'mean_module.constant': torch.tensor(1.5)
         }
         self.gp_v = ExactGP(torch.Tensor(), torch.Tensor(), means.ConstantMean(),
@@ -109,8 +109,8 @@ class BO_algo():
         f_values = []
         x_values = []
 
-        # Restarts the optimization 20 times and pick best solution
-        for _ in range(40):
+        # Restarts the optimization 30 times and pick best solution
+        for _ in range(30):
             x0 = domain[:, 0] + (domain[:, 1] - domain[:, 0]) * \
                  np.random.rand(domain.shape[0])
             result = fmin_l_bfgs_b(objective, x0=x0, bounds=domain,
@@ -144,7 +144,7 @@ class BO_algo():
         Z_f = (out_f.mean - ymax - self.xi) / out_f.stddev
         Z_v = (out_v.mean - self.min_v - self.xi) / out_v.stddev
         impro_v = dist.cdf(Z_v)
-        if((impro_v < 0.5).item()):
+        if((impro_v <= 0.5).item()):
             return impro_v.item()
         else:
             acquisition_function = ((out_f.mean - ymax - self.xi) * dist.cdf(Z_f) + out_f.stddev * torch.exp(
