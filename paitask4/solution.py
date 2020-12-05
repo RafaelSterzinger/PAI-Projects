@@ -217,7 +217,7 @@ class Agent:
         # Number of training steps per epoch
         steps_per_epoch = 3000
         # Number of epochs to train for
-        epochs = 50
+        epochs = 100
         # The longest an episode can go on before cutting it off
         max_ep_len = 300
         # Discount factor for weighting future rewards
@@ -239,6 +239,8 @@ class Agent:
 
         # Initialize the environment
         state, ep_ret, ep_len = self.env.reset(), 0, 0
+
+        step_counter = 0
 
         # Main training loop: collect experience in env and update / log each epoch
         for epoch in range(epochs):
@@ -268,6 +270,7 @@ class Agent:
                 timeout = ep_len == max_ep_len
                 epoch_ended = (t == steps_per_epoch - 1)
 
+                step_counter += 1
                 if terminal or timeout or epoch_ended:
                     # if trajectory didn't reach terminal state, bootstrap value target
                     if epoch_ended:
@@ -281,6 +284,9 @@ class Agent:
 
             mean_return = np.mean(ep_returns) if len(ep_returns) > 0 else np.nan
             print(f"Epoch: {epoch + 1}/{epochs}, mean return {mean_return}")
+
+            if step_counter >= 200000:
+                return True
 
             # This is the end of an epoch, so here is where you likely want to update
             # the policy and / or value function.
