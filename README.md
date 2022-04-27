@@ -1,4 +1,3 @@
-# Probabilistic Artificial Intelligence
 ## Gaussian Process Regression
 Implementation of a Gaussian Process and applying it on an inference regression problem based on drinking water pollution.
 <br/><br/>
